@@ -20,7 +20,7 @@ projeto ──interface──▶ MongoDB: received
 | Container                   | O que faz                                                                 |
 |-----------------------------|---------------------------------------------------------------------------|
 | `personal-whats-validator`  | Python. Descriptografa e valida cada mensagem `received` com a interface. Cria a verificação da senha (`settings.key_check`) e os índices, inclusive o TTL que apaga mensagens 30 dias após o status final. |
-| `personal-whats-whatsapp`   | Node (Baileys). Mantém a sessão do WhatsApp e envia só mensagens `validated`. |
+| `personal-whats-whatsapp`   | Node (Baileys). Mantém a sessão do WhatsApp, envia só mensagens `validated` e guarda a resposta das mensagens com `expect_unique_reply`. |
 
 Nenhum dos dois expõe porta, exceto a página do QR code em `http://localhost:3010`.
 
@@ -48,6 +48,28 @@ docker compose logs -f
   numa mensagem separada. `image/*` e `video/*` vão como mídia, o resto como documento.
 - Erros permanentes (número sem WhatsApp, sem destinatário) viram `failed` na hora; os demais são
   tentados de novo a cada 60s, até 5 vezes.
+
+## Respostas
+
+Só para mensagens enviadas com `expect_unique_reply` (`replies.js`):
+
+- O container escuta apenas o chat para onde a mensagem foi (pelo JID e, em contatos, também pelo
+  LID), por 10 minutos após o envio. Mensagens de outros chats são descartadas antes de o conteúdo
+  ser lido; nada é guardado nem logado sobre elas.
+- A primeira mensagem escrita ali depois do envio é gravada, criptografada, em `reply`. Reações,
+  edições e mensagens enviadas pela própria sessão não contam (`emitOwnEvents: false`).
+- Várias mensagens esperando resposta no mesmo chat ao mesmo tempo: se a resposta citar uma delas
+  (`contextInfo.stanzaId` igual ao id de uma mensagem enviada), vai para a citada; sem citação,
+  vai para a última enviada. Cada resposta conta para uma mensagem só:
+
+  ```
+  13:37  envia (A) "(RESPOSTA ÚNICA) ..."   → espera até 13:47
+  13:38  envia (B) "(RESPOSTA ÚNICA) ..."   → espera até 13:48
+  13:39  chega "sim", sem citar nada        → resposta de (B); (A) segue esperando
+  13:40  chega "não", citando (A)           → resposta de (A)
+  ```
+- O chat esperado fica criptografado em `reply_chat`: ao reiniciar dentro dos 10 minutos, a espera
+  continua. Respostas recebidas enquanto o container estava desconectado também contam.
 
 ## Desenvolvimento
 

@@ -7,6 +7,7 @@ const KEY_DERIVATION_SALT = 'personal-whats/v1'
 const KEY_DERIVATION_ITERATIONS = 600000
 const KEY_SIZE = 32
 const TAG_SIZE = 16
+const NONCE_SIZE = 12
 
 function deriveKey(password) {
   if (!password) {
@@ -22,6 +23,23 @@ function decrypt(key, nonce, ciphertext) {
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce)
   decipher.setAuthTag(tag)
   return Buffer.concat([decipher.update(encryptedBody), decipher.final()])
+}
+
+// Same output as Python's AESGCM: the 16 byte tag at the end of the ciphertext
+function encrypt(key, plaintext) {
+  const nonce = crypto.randomBytes(NONCE_SIZE)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce)
+  const encryptedBody = Buffer.concat([cipher.update(plaintext), cipher.final()])
+  return { nonce, ciphertext: Buffer.concat([encryptedBody, cipher.getAuthTag()]) }
+}
+
+function encryptJson(key, value) {
+  return encrypt(key, Buffer.from(JSON.stringify(value), 'utf8'))
+}
+
+function decryptJson(key, encryptedData) {
+  const plaintext = decrypt(key, toBuffer(encryptedData.nonce), toBuffer(encryptedData.ciphertext))
+  return JSON.parse(plaintext.toString('utf8'))
 }
 
 // Returns {text, recipient, attachments: [{file_name, mimetype, content: Buffer, caption}]}
@@ -46,4 +64,4 @@ function toBuffer(value) {
   return Buffer.isBuffer(value) ? value : Buffer.from(value.buffer)
 }
 
-module.exports = { deriveKey, decrypt, decryptPayload }
+module.exports = { deriveKey, encrypt, decrypt, encryptJson, decryptJson, decryptPayload }

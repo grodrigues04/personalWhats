@@ -5,6 +5,10 @@
 // Queue: validated -> sending -> sent, or back to validated (next_attempt_at in the future)
 // after a temporary error, or failed after MAX_ATTEMPTS / a permanent error.
 //
+// Messages queued with expect_unique_reply: during REPLY_WINDOW_MS after sending, the first message
+// written in that same chat is stored, encrypted, as the reply (see replies.js). No other chat
+// is ever read.
+//
 // Sent messages are kept in SENT_MESSAGES_FILE: when the recipient's phone cannot
 // decrypt a message it asks for a retry, and Baileys answers it through
 // getMessage. Without this the message stays as "Waiting for this message".
@@ -13,7 +17,7 @@ const path = require('path')
 const http = require('http')
 const pino = require('pino')
 const QRCode = require('qrcode')
-const { MongoClient } = require('mongodb')
+const { MongoClient, ObjectId } = require('mongodb')
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -23,8 +27,9 @@ const {
   BufferJSON,
   makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys')
-const { deriveKey, decryptPayload } = require('./crypto')
+const { deriveKey, decryptJson, decryptPayload, encryptJson } = require('./crypto')
 const { buildOutgoingMessages } = require('./outgoing')
+const { REPLY_WINDOW_MS, matchReply } = require('./replies')
 
 const AUTH_DIR = '/app/auth'
 const QR_DIR = '/app/qr'
@@ -49,6 +54,8 @@ let isConnected = false
 let currentQr = null
 let isProcessing = false
 let messages = null
+// Message id -> {chatJids: Set, sentMessageIds: Set, sentAt: Date, deadline: Date}
+const awaitingReplies = new Map()
 
 // Errors that will not go away with a retry: the message fails at once
 class PermanentError extends Error {}
@@ -147,9 +154,18 @@ async function connect() {
     browser: Browsers.ubuntu('personalWhats'),
     markOnlineOnConnect: false,
     syncFullHistory: false,
+    // Messages sent by this session must not come back as received ones: they would be
+    // taken as replies before sendMessage returns their ids
+    emitOwnEvents: false,
   })
 
   socket.ev.on('creds.update', saveCreds)
+  // "notify": live messages. "append": messages received while disconnected.
+  socket.ev.on('messages.upsert', ({ messages: receivedMessages }) => {
+    handleReceivedMessages(receivedMessages).catch((error) => {
+      log(`Erro ao processar mensagens recebidas: ${error.message}`)
+    })
+  })
 
   socket.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
@@ -202,9 +218,14 @@ async function sendQueuedMessage(messageDocument) {
     throw new PermanentError('mensagem sem destinatário e DEFAULT_RECIPIENT não definido')
   }
   const recipientJid = await resolveRecipient(recipient)
+  const sentAt = new Date()
+  const sentMessageIds = []
   for (const outgoingMessage of buildOutgoingMessages(payload)) {
-    rememberSentMessage(await socket.sendMessage(recipientJid, outgoingMessage))
+    const sentMessage = await socket.sendMessage(recipientJid, outgoingMessage)
+    rememberSentMessage(sentMessage)
+    sentMessageIds.push(sentMessage?.key?.id)
   }
+  return { recipientJid, sentAt, sentMessageIds: sentMessageIds.filter(Boolean) }
 }
 
 async function claimNextMessage() {
@@ -216,13 +237,110 @@ async function claimNextMessage() {
   )
 }
 
-async function finishMessage(messageDocument, error) {
+// ---------------------------------------------------------------- replies
+
+// A contact chat can arrive by phone number or by LID: listen to both
+async function findChatJids(recipientJid) {
+  const chatJids = [recipientJid]
+  if (recipientJid.endsWith('@s.whatsapp.net')) {
+    try {
+      const lid = await socket.signalRepository?.lidMapping?.getLIDForPN(recipientJid)
+      if (lid) {
+        chatJids.push(lid)
+      }
+    } catch (error) {
+      log(`Não foi possível buscar o LID do destinatário: ${error.message}`)
+    }
+  }
+  return chatJids
+}
+
+async function startAwaitingReply(messageDocument, delivery) {
+  const awaiting = {
+    chatJids: new Set(await findChatJids(delivery.recipientJid)),
+    sentMessageIds: new Set(delivery.sentMessageIds),
+    sentAt: delivery.sentAt,
+    deadline: new Date(delivery.sentAt.getTime() + REPLY_WINDOW_MS),
+  }
+  awaitingReplies.set(messageDocument._id.toString(), awaiting)
+  return {
+    reply_deadline: awaiting.deadline,
+    // Kept only so a restart keeps listening; encrypted like the recipient in the payload
+    reply_chat: encryptJson(encryptionKey, {
+      chat_jids: [...awaiting.chatJids],
+      sent_message_ids: [...awaiting.sentMessageIds],
+      sent_at: awaiting.sentAt.toISOString(),
+    }),
+  }
+}
+
+async function loadAwaitingReplies() {
+  const awaitingDocuments = await messages.find(
+    { expect_unique_reply: true, status: 'sent', reply: { $exists: false }, reply_deadline: { $gt: new Date() } },
+    { projection: { reply_chat: 1, reply_deadline: 1 } },
+  ).toArray()
+  for (const messageDocument of awaitingDocuments) {
+    try {
+      const replyChat = decryptJson(encryptionKey, messageDocument.reply_chat)
+      awaitingReplies.set(messageDocument._id.toString(), {
+        chatJids: new Set(replyChat.chat_jids),
+        sentMessageIds: new Set(replyChat.sent_message_ids),
+        sentAt: new Date(replyChat.sent_at),
+        deadline: messageDocument.reply_deadline,
+      })
+    } catch (error) {
+      log(`Não foi possível retomar a espera de resposta de ${messageDocument._id}: ${error.message}`)
+    }
+  }
+  if (awaitingReplies.size) {
+    log(`Aguardando resposta de ${awaitingReplies.size} mensagem(ns)`)
+  }
+}
+
+function forgetExpiredReplies(now) {
+  for (const [messageId, awaiting] of awaitingReplies) {
+    if (now > awaiting.deadline) {
+      awaitingReplies.delete(messageId)
+    }
+  }
+}
+
+async function handleReceivedMessages(receivedMessages) {
+  const now = new Date()
+  forgetExpiredReplies(now)
+  if (!awaitingReplies.size) {
+    return
+  }
+  const ownMessageIds = new Set(Object.keys(sentMessages))
+  for (const webMessage of receivedMessages) {
+    const match = matchReply(awaitingReplies, webMessage, ownMessageIds, now)
+    if (!match) {
+      continue
+    }
+    awaitingReplies.delete(match.messageId)
+    const result = await messages.updateOne(
+      { _id: new ObjectId(match.messageId), reply: { $exists: false } },
+      { $set: { reply: encryptJson(encryptionKey, match.reply), replied_at: now, updated_at: now } },
+    )
+    if (result.modifiedCount) {
+      log(`Resposta recebida para ${match.messageId}`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------- queue
+
+async function finishMessage(messageDocument, error, delivery) {
   const now = new Date()
   const filter = { _id: messageDocument._id, status: 'sending' }
   if (!error) {
+    const replyFields = messageDocument.expect_unique_reply
+      ? await startAwaitingReply(messageDocument, delivery)
+      : {}
     await messages.updateOne(filter, { $set: {
       status: 'sent', sent_at: now, updated_at: now, error: null,
       expires_at: new Date(now.getTime() + RETENTION_MS),
+      ...replyFields,
     } })
     log(`Enviada: ${messageDocument._id} (${messageDocument.source})`)
     return
@@ -252,8 +370,8 @@ async function processQueue() {
     let messageDocument
     while (isConnected && (messageDocument = await claimNextMessage())) {
       try {
-        await sendQueuedMessage(messageDocument)
-        await finishMessage(messageDocument, null)
+        const delivery = await sendQueuedMessage(messageDocument)
+        await finishMessage(messageDocument, null, delivery)
       } catch (error) {
         await finishMessage(messageDocument, error)
       }
@@ -287,6 +405,7 @@ async function main() {
   await mongoClient.connect()
   messages = mongoClient.db(MONGO_DATABASE).collection('messages')
   await requeueInterruptedMessages()
+  await loadAwaitingReplies()
   if (!DEFAULT_RECIPIENT) {
     log('DEFAULT_RECIPIENT não definido: mensagens sem destinatário vão falhar')
   }

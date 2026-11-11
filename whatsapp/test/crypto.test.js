@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const vectors = require('./vectors/v1.json')
-const { deriveKey, decrypt, decryptPayload } = require('../crypto')
+const { deriveKey, decrypt, decryptJson, decryptPayload, encryptJson } = require('../crypto')
 
 const key = deriveKey(vectors.password)
 
@@ -46,4 +46,12 @@ test('wrong password throws', () => {
 
 test('unknown encryption version throws', () => {
   assert.throws(() => decryptPayload(key, { encryption_version: 2 }), /versão de criptografia/)
+})
+
+test('encryptJson output decrypts back, with a random nonce each time', () => {
+  const reply = { text: 'sim ✅', message_type: 'conversation' }
+  const first = encryptJson(key, reply)
+  const second = encryptJson(key, reply)
+  assert.notDeepStrictEqual(first.nonce, second.nonce)
+  assert.deepStrictEqual(decryptJson(key, first), reply)
 })
