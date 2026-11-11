@@ -58,6 +58,8 @@ Só para mensagens enviadas com `expect_unique_reply` (`replies.js`):
   ser lido; nada é guardado nem logado sobre elas.
 - A primeira mensagem escrita ali depois do envio é gravada, criptografada, em `reply`. Reações,
   edições e mensagens enviadas pela própria sessão não contam (`emitOwnEvents: false`).
+- Depois de gravada, a resposta ganha a reação ✅ (`REPLY_REACTION`). Se a reação falhar, só é
+  logada: a resposta já está guardada.
 - Várias mensagens esperando resposta no mesmo chat ao mesmo tempo: se a resposta citar uma delas
   (`contextInfo.stanzaId` igual ao id de uma mensagem enviada), vai para a citada; sem citação,
   vai para a última enviada. Cada resposta conta para uma mensagem só:

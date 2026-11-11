@@ -6,8 +6,8 @@
 // after a temporary error, or failed after MAX_ATTEMPTS / a permanent error.
 //
 // Messages queued with expect_unique_reply: during REPLY_WINDOW_MS after sending, the first message
-// written in that same chat is stored, encrypted, as the reply (see replies.js). No other chat
-// is ever read.
+// written in that same chat is stored, encrypted, as the reply (see replies.js) and gets a ✅
+// reaction. No other chat is ever read.
 //
 // Sent messages are kept in SENT_MESSAGES_FILE: when the recipient's phone cannot
 // decrypt a message it asks for a retry, and Baileys answers it through
@@ -29,7 +29,7 @@ const {
 } = require('@whiskeysockets/baileys')
 const { deriveKey, decryptJson, decryptPayload, encryptJson } = require('./crypto')
 const { buildOutgoingMessages } = require('./outgoing')
-const { REPLY_WINDOW_MS, matchReply } = require('./replies')
+const { REPLY_WINDOW_MS, buildReplyReaction, matchReply } = require('./replies')
 
 const AUTH_DIR = '/app/auth'
 const QR_DIR = '/app/qr'
@@ -324,7 +324,17 @@ async function handleReceivedMessages(receivedMessages) {
     )
     if (result.modifiedCount) {
       log(`Resposta recebida para ${match.messageId}`)
+      await reactToReply(webMessage)
     }
+  }
+}
+
+// The reply is already stored: a failed reaction is only logged
+async function reactToReply(webMessage) {
+  try {
+    rememberSentMessage(await socket.sendMessage(webMessage.key.remoteJid, buildReplyReaction(webMessage)))
+  } catch (error) {
+    log(`Não foi possível reagir à resposta: ${error.message}`)
   }
 }
 

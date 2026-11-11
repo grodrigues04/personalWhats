@@ -6,6 +6,8 @@
 const { getContentType, jidNormalizedUser, normalizeMessageContent } = require('@whiskeysockets/baileys')
 
 const REPLY_WINDOW_MS = 10 * 60 * 1000
+// Reaction added to the message taken as the reply, so whoever replied knows it was received
+const REPLY_REACTION = '✅'
 
 // Content types that are not something a person wrote: reactions, edits, deletions, keys...
 const IGNORED_CONTENT_TYPES = new Set([
@@ -80,4 +82,8 @@ function matchReply(awaitingReplies, webMessage, ownMessageIds, now = new Date()
   return { messageId, reply: { text: reply.text, message_type: reply.message_type } }
 }
 
-module.exports = { REPLY_WINDOW_MS, chatJidsOf, readReply, matchReply }
+function buildReplyReaction(webMessage) {
+  return { react: { text: REPLY_REACTION, key: webMessage.key } }
+}
+
+module.exports = { REPLY_WINDOW_MS, REPLY_REACTION, buildReplyReaction, chatJidsOf, readReply, matchReply }

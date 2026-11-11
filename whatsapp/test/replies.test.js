@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { matchReply, readReply } = require('../replies')
+const { buildReplyReaction, matchReply, readReply } = require('../replies')
 
 const GROUP = '120363000000000000@g.us'
 const CONTACT = '5548999998888@s.whatsapp.net'
@@ -81,4 +81,9 @@ test('media replies keep only the caption', () => {
   assert.deepStrictEqual(readReply(received({ message: { audioMessage: { seconds: 3 } } })), {
     text: null, message_type: 'audioMessage', quoted_message_id: null,
   })
+})
+
+test('the reaction points to the reply with its original key', () => {
+  const reply = received({ remoteJid: CONTACT_LID, remoteJidAlt: CONTACT, id: 'IN9' })
+  assert.deepStrictEqual(buildReplyReaction(reply), { react: { text: '✅', key: reply.key } })
 })
