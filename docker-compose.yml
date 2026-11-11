@@ -1,0 +1,39 @@
+name: personal-whats
+
+# Nobody talks to these containers: projects only insert messages in MongoDB through
+# interface-personal-whats. Each service has its own network and no published port, except the
+# QR code page bound to localhost.
+services:
+  # received -> validated | rejected. Rejected messages never reach the WhatsApp container.
+  validator:
+    build: ./validator
+    container_name: personal-whats-validator
+    restart: unless-stopped
+    environment:
+      MONGO_URI: ${MONGO_URI:?MONGO_URI is required}
+      ENCRYPTION_PASSWORD: ${ENCRYPTION_PASSWORD:?ENCRYPTION_PASSWORD is required}
+      TZ: America/Sao_Paulo
+    networks:
+      - validator
+
+  # Holds the WhatsApp session and sends only validated messages.
+  whatsapp:
+    build: ./whatsapp
+    container_name: personal-whats-whatsapp
+    restart: unless-stopped
+    environment:
+      MONGO_URI: ${MONGO_URI:?MONGO_URI is required}
+      ENCRYPTION_PASSWORD: ${ENCRYPTION_PASSWORD:?ENCRYPTION_PASSWORD is required}
+      DEFAULT_RECIPIENT: ${DEFAULT_RECIPIENT:-}
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./whatsapp-auth:/app/auth
+      - ./whatsapp-qr:/app/qr
+    ports:
+      - "127.0.0.1:3010:3010"
+    networks:
+      - whatsapp
+
+networks:
+  validator:
+  whatsapp:
