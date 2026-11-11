@@ -35,7 +35,8 @@ docker compose logs -f
 - `ENCRYPTION_PASSWORD` é a mesma em todos os projetos que enviam mensagens e é a senha do botão
   "Descriptografar" do frontend. Se mudar, apague `personal_whats.settings` `key_check` antes de
   subir de novo: mensagens criptografadas com a senha antiga serão rejeitadas.
-- `DEFAULT_RECIPIENT`: número (DDI + DDD + número) usado quando a mensagem não tem destinatário.
+- `DEFAULT_RECIPIENT`: número (DDI + DDD + número) ou JID de grupo (`...@g.us`) usado quando a
+  mensagem não tem destinatário.
 - Primeira conexão: abra `http://localhost:3010` e escaneie o QR code em *Aparelhos conectados*.
   A sessão fica em `whatsapp-auth/` (nunca commitar).
 - Nova versão da interface: `docker compose build --no-cache validator && docker compose up -d`.
