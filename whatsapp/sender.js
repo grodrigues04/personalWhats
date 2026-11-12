@@ -9,6 +9,11 @@
 // written in that same chat is stored, encrypted, as the reply (see replies.js) and gets a ✅
 // reaction. No other chat is ever read.
 //
+// Chat watches (interface watch_chat): while a watch is active, the commands (messages starting
+// with "/", or only the watch's command) written in its chat are stored, encrypted, in the
+// "incoming" collection for the project to read (see watches.js). A stored command is never
+// taken as a reply. Every other message of the chat is discarded unread.
+//
 // Sent messages are kept in SENT_MESSAGES_FILE: when the recipient's phone cannot
 // decrypt a message it asks for a retry, and Baileys answers it through
 // getMessage. Without this the message stays as "Waiting for this message".
@@ -27,9 +32,10 @@ const {
   BufferJSON,
   makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys')
-const { deriveKey, decryptJson, decryptPayload, encryptJson } = require('./crypto')
-const { buildOutgoingMessages } = require('./outgoing')
+const { ENCRYPTION_VERSION, deriveKey, decryptJson, decryptPayload, decryptDocumentJson, encryptJson } = require('./crypto')
+const { buildOutgoingMessages, buildQuotedMessage } = require('./outgoing')
 const { REPLY_WINDOW_MS, buildReplyReaction, matchReply } = require('./replies')
+const { matchCommands } = require('./watches')
 
 const AUTH_DIR = '/app/auth'
 const QR_DIR = '/app/qr'
@@ -54,8 +60,12 @@ let isConnected = false
 let currentQr = null
 let isProcessing = false
 let messages = null
+let watchesCollection = null
+let incomingCollection = null
 // Message id -> {chatJids: Set, sentMessageIds: Set, sentAt: Date, deadline: Date}
 const awaitingReplies = new Map()
+// Watch id -> {chatJids: Set, command, createdAt: Date, until: Date | null}
+const activeWatches = new Map()
 
 // Errors that will not go away with a retry: the message fails at once
 class PermanentError extends Error {}
@@ -176,6 +186,7 @@ async function connect() {
       clearQr()
       log('Conectado ao WhatsApp')
       processQueue()
+      refreshWatches()
     }
     if (connection === 'close') {
       isConnected = false
@@ -220,8 +231,11 @@ async function sendQueuedMessage(messageDocument) {
   const recipientJid = await resolveRecipient(recipient)
   const sentAt = new Date()
   const sentMessageIds = []
+  // Only the first message replies to the quoted one
+  let quoted = buildQuotedMessage(payload.quoted)
   for (const outgoingMessage of buildOutgoingMessages(payload)) {
-    const sentMessage = await socket.sendMessage(recipientJid, outgoingMessage)
+    const sentMessage = await socket.sendMessage(recipientJid, outgoingMessage, quoted ? { quoted } : {})
+    quoted = null
     rememberSentMessage(sentMessage)
     sentMessageIds.push(sentMessage?.key?.id)
   }
@@ -308,11 +322,18 @@ function forgetExpiredReplies(now) {
 async function handleReceivedMessages(receivedMessages) {
   const now = new Date()
   forgetExpiredReplies(now)
-  if (!awaitingReplies.size) {
+  if (!awaitingReplies.size && !activeWatches.size) {
     return
   }
   const ownMessageIds = new Set(Object.keys(sentMessages))
   for (const webMessage of receivedMessages) {
+    // A command stored for a watch is never a reply: it does not consume the awaited answer
+    if (await storeCommands(webMessage, ownMessageIds, now)) {
+      continue
+    }
+    if (!awaitingReplies.size) {
+      continue
+    }
     const match = matchReply(awaitingReplies, webMessage, ownMessageIds, now)
     if (!match) {
       continue
@@ -336,6 +357,84 @@ async function reactToReply(webMessage) {
   } catch (error) {
     log(`Não foi possível reagir à resposta: ${error.message}`)
   }
+}
+
+// ---------------------------------------------------------------- watches
+
+// Resolves the chat of a watch once: group JID as is, phone number by onWhatsApp (and its LID)
+async function resolveWatchChatJids(chat) {
+  const address = chat || DEFAULT_RECIPIENT
+  if (!address) {
+    throw new Error('escuta sem chat e DEFAULT_RECIPIENT não definido')
+  }
+  if (address.endsWith('@g.us')) {
+    return [address]
+  }
+  return findChatJids(await resolveRecipient(address))
+}
+
+// Reads the active watches of MongoDB. New ones are resolved; stopped or ended ones are dropped
+async function refreshWatches() {
+  if (!watchesCollection) {
+    return
+  }
+  try {
+    const now = new Date()
+    const watchDocuments = await watchesCollection.find(
+      { stopped_at: null, $or: [{ until: null }, { until: { $gt: now } }] },
+    ).toArray()
+    const activeIds = new Set(watchDocuments.map((watchDocument) => watchDocument._id.toString()))
+    for (const watchId of activeWatches.keys()) {
+      if (!activeIds.has(watchId)) {
+        activeWatches.delete(watchId)
+        log(`Escuta encerrada: ${watchId}`)
+      }
+    }
+    for (const watchDocument of watchDocuments) {
+      const watchId = watchDocument._id.toString()
+      // Contacts are resolved through WhatsApp: wait for the connection
+      if (activeWatches.has(watchId) || !isConnected) {
+        continue
+      }
+      try {
+        const watchPayload = decryptDocumentJson(encryptionKey, watchDocument)
+        activeWatches.set(watchId, {
+          chatJids: new Set(await resolveWatchChatJids(watchPayload.chat)),
+          command: watchPayload.command || null,
+          createdAt: watchDocument.created_at,
+          until: watchDocument.until || null,
+        })
+        log(`Escuta ativa: ${watchId} (${watchDocument.source})`)
+      } catch (error) {
+        log(`Não foi possível ativar a escuta ${watchId}: ${error.message}`)
+      }
+    }
+  } catch (error) {
+    log(`Erro ao ler as escutas: ${error.message}`)
+  }
+}
+
+// Returns true when the message was a command of at least one watch
+async function storeCommands(webMessage, ownMessageIds, now) {
+  const matches = matchCommands(activeWatches, webMessage, ownMessageIds, now)
+  for (const { watchId, incoming } of matches) {
+    const { nonce, ciphertext } = encryptJson(encryptionKey, incoming)
+    // Upsert: the same message can arrive twice (live and again after a reconnection)
+    await incomingCollection.updateOne(
+      { watch_id: new ObjectId(watchId), whatsapp_message_id: webMessage.key.id },
+      { $setOnInsert: {
+        encryption_version: ENCRYPTION_VERSION,
+        nonce,
+        ciphertext,
+        received_at: now,
+        read_at: null,
+        expires_at: new Date(now.getTime() + RETENTION_MS),
+      } },
+      { upsert: true },
+    )
+    log(`Comando recebido para a escuta ${watchId}`)
+  }
+  return matches.length > 0
 }
 
 // ---------------------------------------------------------------- queue
@@ -413,7 +512,10 @@ async function main() {
   }
   const mongoClient = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 15000 })
   await mongoClient.connect()
-  messages = mongoClient.db(MONGO_DATABASE).collection('messages')
+  const database = mongoClient.db(MONGO_DATABASE)
+  messages = database.collection('messages')
+  watchesCollection = database.collection('watches')
+  incomingCollection = database.collection('incoming')
   await requeueInterruptedMessages()
   await loadAwaitingReplies()
   if (!DEFAULT_RECIPIENT) {
@@ -424,6 +526,7 @@ async function main() {
   fs.mkdirSync(QR_DIR, { recursive: true })
   startQrServer()
   setInterval(processQueue, POLL_INTERVAL_MS)
+  setInterval(refreshWatches, POLL_INTERVAL_MS)
   connect()
   log(`Lendo a fila de ${MONGO_DATABASE} a cada ${POLL_INTERVAL_MS / 1000}s`)
 }

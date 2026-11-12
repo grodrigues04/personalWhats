@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
-COPY sender.js crypto.js outgoing.js replies.js ./
+COPY sender.js crypto.js outgoing.js replies.js watches.js ./
 
 RUN mkdir -p /app/auth /app/qr && chown -R node:node /app
 USER node

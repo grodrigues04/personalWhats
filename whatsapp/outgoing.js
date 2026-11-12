@@ -4,6 +4,7 @@
 // - With attachments: the text becomes the caption of the first attachment. When that
 //   attachment already has its own caption, the text goes first as a separate message.
 // - image/* and video/* are sent as media; everything else as a document.
+// - With `quoted`, the first message replies to ("Responder") that received message.
 
 function buildMediaContent(attachment, caption) {
   const content = caption ? { caption } : {}
@@ -35,4 +36,20 @@ function buildOutgoingMessages(payload) {
   return outgoingMessages
 }
 
-module.exports = { buildOutgoingMessages }
+// Baileys only needs the key of the quoted message and a preview of its content
+function buildQuotedMessage(quoted) {
+  if (!quoted) {
+    return null
+  }
+  return {
+    key: {
+      remoteJid: quoted.chat_jid,
+      id: quoted.message_id,
+      fromMe: Boolean(quoted.from_me),
+      ...(quoted.participant ? { participant: quoted.participant } : {}),
+    },
+    message: { conversation: quoted.text || '' },
+  }
+}
+
+module.exports = { buildOutgoingMessages, buildQuotedMessage }

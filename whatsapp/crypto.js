@@ -42,7 +42,7 @@ function decryptJson(key, encryptedData) {
   return JSON.parse(plaintext.toString('utf8'))
 }
 
-// Returns {text, recipient, attachments: [{file_name, mimetype, content: Buffer, caption}]}
+// Returns {text, recipient, attachments: [{file_name, mimetype, content: Buffer, caption}], quoted}
 function decryptPayload(key, messageDocument) {
   if (messageDocument.encryption_version !== ENCRYPTION_VERSION) {
     throw new Error(`versão de criptografia não suportada: ${messageDocument.encryption_version}`)
@@ -56,7 +56,16 @@ function decryptPayload(key, messageDocument) {
       ...attachment,
       content: Buffer.from(attachment.content, 'base64'),
     })),
+    quoted: payload.quoted ?? null,
   }
+}
+
+// Watches keep their encrypted JSON in the top-level nonce/ciphertext fields
+function decryptDocumentJson(key, document) {
+  if (document.encryption_version !== ENCRYPTION_VERSION) {
+    throw new Error(`versão de criptografia não suportada: ${document.encryption_version}`)
+  }
+  return decryptJson(key, { nonce: document.nonce, ciphertext: document.ciphertext })
 }
 
 // BSON Binary from the driver, or a Buffer in tests
@@ -64,4 +73,6 @@ function toBuffer(value) {
   return Buffer.isBuffer(value) ? value : Buffer.from(value.buffer)
 }
 
-module.exports = { deriveKey, encrypt, decrypt, encryptJson, decryptJson, decryptPayload }
+module.exports = {
+  ENCRYPTION_VERSION, deriveKey, encrypt, decrypt, encryptJson, decryptJson, decryptPayload, decryptDocumentJson,
+}

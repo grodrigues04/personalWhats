@@ -52,6 +52,19 @@ def ensure_indexes(messages: Collection[Document]) -> None:
     messages.create_index("expires_at", expireAfterSeconds=0)
 
 
+def ensure_watch_indexes(watches: Collection[Document], incoming: Collection[Document]) -> None:
+    """Chat watches and the commands they received (interface watch_chat / read_new_messages)."""
+    watches.create_index([("source", ASCENDING), ("stopped_at", ASCENDING)])
+    watches.create_index("expires_at", expireAfterSeconds=0)
+    incoming.create_index(
+        [("watch_id", ASCENDING), ("whatsapp_message_id", ASCENDING)], unique=True
+    )
+    incoming.create_index(
+        [("watch_id", ASCENDING), ("read_at", ASCENDING), ("received_at", ASCENDING)]
+    )
+    incoming.create_index("expires_at", expireAfterSeconds=0)
+
+
 def summarize_validation_error(error: ValidationError) -> str:
     problems = [
         f"{'.'.join(str(location) for location in problem['loc']) or 'mensagem'}: {problem['msg']}"
@@ -150,6 +163,7 @@ def run() -> None:
         )
         sys.exit(1)
     ensure_indexes(messages)
+    ensure_watch_indexes(database[main.WATCHES_COLLECTION], database[main.INCOMING_COLLECTION])
     log.info(f"Validating messages from {database_name} every {poll_interval_seconds}s")
 
     while is_running:

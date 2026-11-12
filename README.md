@@ -20,7 +20,7 @@ projeto ──interface──▶ MongoDB: received
 | Container                   | O que faz                                                                 |
 |-----------------------------|---------------------------------------------------------------------------|
 | `personal-whats-validator`  | Python. Descriptografa e valida cada mensagem `received` com a interface. Cria a verificação da senha (`settings.key_check`) e os índices, inclusive o TTL que apaga mensagens 30 dias após o status final. |
-| `personal-whats-whatsapp`   | Node (Baileys). Mantém a sessão do WhatsApp, envia só mensagens `validated` e guarda a resposta das mensagens com `expect_unique_reply`. |
+| `personal-whats-whatsapp`   | Node (Baileys). Mantém a sessão do WhatsApp, envia só mensagens `validated`, guarda a resposta das mensagens com `expect_unique_reply` e os comandos dos chats com escuta ativa. |
 
 Nenhum dos dois expõe porta, exceto a página do QR code em `http://localhost:3010`.
 
@@ -48,6 +48,7 @@ docker compose logs -f
   numa mensagem separada. `image/*` e `video/*` vão como mídia, o resto como documento.
 - Erros permanentes (número sem WhatsApp, sem destinatário) viram `failed` na hora; os demais são
   tentados de novo a cada 60s, até 5 vezes.
+- Com `quoted` no payload, a primeira mensagem enviada responde ("Responder") à mensagem citada.
 
 ## Respostas
 
@@ -72,6 +73,21 @@ Só para mensagens enviadas com `expect_unique_reply` (`replies.js`):
   ```
 - O chat esperado fica criptografado em `reply_chat`: ao reiniciar dentro dos 10 minutos, a espera
   continua. Respostas recebidas enquanto o container estava desconectado também contam.
+
+## Escutas de comandos
+
+Para projetos que recebem comandos pelo WhatsApp (interface `watch_chat`, `watches.js`; hoje o
+`prompt_automator`):
+
+- A cada 5 segundos o container lê as escutas ativas da coleção `watches` (sem `stopped_at` e com
+  `until` no futuro ou vazio) e descriptografa o chat de cada uma. Sem chat, usa o
+  `DEFAULT_RECIPIENT`.
+- Num chat com escuta, só mensagens que começam com `/` são olhadas, e com `command` só esse
+  comando. Elas são gravadas, criptografadas, em `incoming` (uma vez por mensagem e escuta,
+  TTL de 30 dias). Todo o resto é descartado sem ser lido nem logado.
+- Mensagens enviadas pelo próprio personalWhats nunca são comandos. As escritas no celular da
+  conta contam (`from_me`).
+- Um comando gravado por uma escuta não é usado como resposta de `expect_unique_reply`.
 
 ## Desenvolvimento
 

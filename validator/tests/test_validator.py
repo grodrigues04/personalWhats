@@ -98,3 +98,20 @@ def test_ensure_key_check_creates_and_then_verifies(database: Any, key: bytes) -
     assert settings.count_documents({}) == 1
     with pytest.raises(InvalidPasswordError):
         validator.ensure_key_check(settings, crypto.derive_key("outra"))
+
+
+def test_message_quoting_a_received_command_is_validated(database: Any, key: bytes) -> None:
+    quoted = schemas.QuotedMessage(chat_jid="120363000000000000@g.us", message_id="ABC")
+    plaintext = schemas.MessagePayload(text="Na fila", quoted=quoted).model_dump_json().encode()
+    message_id = insert_message(database, key, plaintext)
+
+    assert validate(database, key)[message_id]["status"] == "validated"
+
+
+def test_ensure_watch_indexes_creates_ttl_and_unique_command_indexes(database: Any) -> None:
+    incoming = database[main.INCOMING_COLLECTION]
+    validator.ensure_watch_indexes(database[main.WATCHES_COLLECTION], incoming)
+
+    indexes = incoming.index_information()
+    assert indexes["watch_id_1_whatsapp_message_id_1"]["unique"] is True
+    assert indexes["expires_at_1"]["expireAfterSeconds"] == 0
