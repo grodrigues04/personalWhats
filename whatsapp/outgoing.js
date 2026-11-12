@@ -5,6 +5,7 @@
 //   attachment already has its own caption, the text goes first as a separate message.
 // - image/* and video/* are sent as media; everything else as a document.
 // - With `quoted`, the first message replies to ("Responder") that received message.
+// - With `reaction`, only an emoji reaction to `quoted` is sent (no text nor attachments).
 
 function buildMediaContent(attachment, caption) {
   const content = caption ? { caption } : {}
@@ -23,7 +24,10 @@ function buildMediaContent(attachment, caption) {
 }
 
 function buildOutgoingMessages(payload) {
-  const { text, attachments } = payload
+  const { text, attachments, reaction, quoted } = payload
+  if (reaction) {
+    return [{ react: { text: reaction, key: buildQuotedMessage(quoted).key } }]
+  }
   if (attachments.length === 0) {
     return [{ text }]
   }

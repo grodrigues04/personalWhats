@@ -42,7 +42,7 @@ function decryptJson(key, encryptedData) {
   return JSON.parse(plaintext.toString('utf8'))
 }
 
-// Returns {text, recipient, attachments: [{file_name, mimetype, content: Buffer, caption}], quoted}
+// Returns {text, recipient, attachments: [{file_name, mimetype, content: Buffer, caption}], quoted, reaction}
 function decryptPayload(key, messageDocument) {
   if (messageDocument.encryption_version !== ENCRYPTION_VERSION) {
     throw new Error(`versão de criptografia não suportada: ${messageDocument.encryption_version}`)
@@ -57,6 +57,7 @@ function decryptPayload(key, messageDocument) {
       content: Buffer.from(attachment.content, 'base64'),
     })),
     quoted: payload.quoted ?? null,
+    reaction: payload.reaction ?? null,
   }
 }
 

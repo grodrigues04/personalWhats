@@ -49,6 +49,7 @@ docker compose logs -f
 - Erros permanentes (número sem WhatsApp, sem destinatário) viram `failed` na hora; os demais são
   tentados de novo a cada 60s, até 5 vezes.
 - Com `quoted` no payload, a primeira mensagem enviada responde ("Responder") à mensagem citada.
+- Com `reaction`, só a reação (emoji) à mensagem citada é enviada.
 
 ## Respostas
 

@@ -231,8 +231,8 @@ async function sendQueuedMessage(messageDocument) {
   const recipientJid = await resolveRecipient(recipient)
   const sentAt = new Date()
   const sentMessageIds = []
-  // Only the first message replies to the quoted one
-  let quoted = buildQuotedMessage(payload.quoted)
+  // Only the first message replies to the quoted one; a reaction already points to it
+  let quoted = payload.reaction ? null : buildQuotedMessage(payload.quoted)
   for (const outgoingMessage of buildOutgoingMessages(payload)) {
     const sentMessage = await socket.sendMessage(recipientJid, outgoingMessage, quoted ? { quoted } : {})
     quoted = null

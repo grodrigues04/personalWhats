@@ -38,3 +38,12 @@ test('quoted message keeps the key of the received message', () => {
   })
   assert.strictEqual(buildQuotedMessage(null), null)
 })
+
+test('reaction is sent alone, pointing to the quoted message', () => {
+  assert.deepStrictEqual(buildOutgoingMessages({
+    text: null,
+    attachments: [],
+    reaction: '✅',
+    quoted: { chat_jid: '120363000000000000@g.us', message_id: 'ABC', participant: '1@s.whatsapp.net', from_me: false, text: null },
+  }), [{ react: { text: '✅', key: { remoteJid: '120363000000000000@g.us', id: 'ABC', fromMe: false, participant: '1@s.whatsapp.net' } } }])
+})
