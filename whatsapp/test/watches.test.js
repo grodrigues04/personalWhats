@@ -1,14 +1,25 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { matchesCommand, matchCommands } = require('../watches')
+const { buildEditMessageId, matchesCommand, matchCommands, matchEdits } = require('../watches')
 
 const CLAUDIO = '120363000000000001@g.us'
 const SQUEAKER = '120363000000000002@g.us'
 const CREATED_AT = new Date('2026-01-01T12:00:00.400Z')
 const NOW = new Date('2026-01-01T12:01:00Z')
 
-function watch(chatJids, command = null, until = null) {
-  return { chatJids: new Set(chatJids), command, createdAt: CREATED_AT, until }
+function watch(chatJids, command = null, until = null, includeEdits = false) {
+  return { chatJids: new Set(chatJids), command, createdAt: CREATED_AT, until, includeEdits }
+}
+
+// Like Baileys emits an edit in "messages.update": the key of the original message
+function edited({ remoteJid = CLAUDIO, id = 'IN1', text = '/claude faça direito', seconds = 1767268850, fromMe = true } = {}) {
+  return {
+    key: { remoteJid, id, fromMe },
+    update: {
+      message: { editedMessage: { message: { extendedTextMessage: { text } } } },
+      messageTimestamp: seconds,
+    },
+  }
 }
 
 function received({ remoteJid = SQUEAKER, id = 'IN1', text = '/prompt faça o login', seconds = 1767268830, fromMe = false } = {}) {
@@ -97,4 +108,47 @@ test('messages from the phone of the account count, as from_me', () => {
 test('every watch of the chat gets the command', () => {
   const watches = new Map([['w1', watch([SQUEAKER])], ['w2', watch([SQUEAKER], '/prompt')]])
   assert.deepStrictEqual(matchCommands(watches, received(), new Set(), NOW).map((match) => match.watchId), ['w1', 'w2'])
+})
+
+test('an edit of a command is stored for watches with include_edits, pointing to the original', () => {
+  const watches = new Map([['w1', watch([CLAUDIO], '/claude', null, true)], ['w2', watch([CLAUDIO])]])
+  assert.deepStrictEqual(matchEdits(watches, edited(), new Set(), NOW), [{
+    watchId: 'w1',
+    incoming: {
+      text: '/claude faça direito',
+      sender_name: null,
+      sender_jid: CLAUDIO,
+      from_me: true,
+      quote: {
+        chat_jid: CLAUDIO,
+        message_id: 'IN1',
+        participant: null,
+        from_me: true,
+        text: '/claude faça direito',
+      },
+      edited_message_id: 'IN1',
+    },
+  }])
+})
+
+test('an edit that is no longer the command of the watch is discarded', () => {
+  const watches = new Map([['w1', watch([CLAUDIO], '/claude', null, true)]])
+  assert.deepStrictEqual(matchEdits(watches, edited({ text: 'esquece' }), new Set(), NOW), [])
+  assert.deepStrictEqual(matchEdits(watches, edited({ text: '/prompt x' }), new Set(), NOW), [])
+})
+
+test('updates that are not edits are discarded', () => {
+  const watches = new Map([['w1', watch([CLAUDIO], null, null, true)]])
+  const statusUpdate = { key: { remoteJid: CLAUDIO, id: 'IN1' }, update: { status: 4 } }
+  assert.deepStrictEqual(matchEdits(watches, statusUpdate, new Set(), NOW), [])
+})
+
+test('edits of other chats are discarded', () => {
+  const watches = new Map([['w1', watch([SQUEAKER], null, null, true)]])
+  assert.deepStrictEqual(matchEdits(watches, edited(), new Set(), NOW), [])
+})
+
+test('each edit of a message has its own id', () => {
+  assert.strictEqual(buildEditMessageId(edited()), 'edit:IN1:1767268850')
+  assert.notStrictEqual(buildEditMessageId(edited()), buildEditMessageId(edited({ seconds: 1767268860 })))
 })

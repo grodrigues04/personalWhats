@@ -89,6 +89,10 @@ Para projetos que recebem comandos pelo WhatsApp (interface `watch_chat`, `watch
 - Mensagens enviadas pelo próprio personalWhats nunca são comandos. As escritas no celular da
   conta contam (`from_me`).
 - Um comando gravado por uma escuta não é usado como resposta de `expect_unique_reply`.
+- Edições (evento `messages.update` do Baileys) só valem para escutas com `include_edits`: se o
+  texto novo ainda é comando da escuta, ele é gravado como uma mensagem nova em `incoming`, com
+  `edited_message_id` (id da mensagem original) e `whatsapp_message_id` =
+  `edit:<id original>:<segundo da edição>`. Nas outras escutas, edições são descartadas.
 
 ## Desenvolvimento
 

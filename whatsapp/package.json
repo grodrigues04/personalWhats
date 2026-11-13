@@ -1,6 +1,6 @@
 {
   "name": "personal-whats-whatsapp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "sender.js",
   "scripts": {

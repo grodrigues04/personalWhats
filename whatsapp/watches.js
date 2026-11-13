@@ -4,6 +4,9 @@
 // Privacy rule, same as replies.js: only the watched chat is looked at, and only messages that
 // start with "/" (and, when the watch names a command, only that command). Every other message is
 // discarded unread: nothing is stored or logged about it.
+//
+// Edits only count for watches with include_edits: the new text is stored as a new command with
+// `edited_message_id` (the id of the original message), when it is still a command of the watch.
 const { chatJidsOf, readReply } = require('./replies')
 
 const COMMAND_PREFIX = '/'
@@ -21,7 +24,8 @@ function matchesCommand(text, command) {
   return firstWord.toLowerCase() === command
 }
 
-// `watches`: Map of watch id -> {chatJids: Set, command, createdAt: Date, until: Date | null}.
+// `watches`: Map of watch id -> {chatJids: Set, command, createdAt: Date, until: Date | null,
+// includeEdits: bool}.
 // `ownMessageIds`: ids of the messages this session sent, which are never commands.
 // Returns [{watchId, incoming}], empty when the message is not a command of any watch.
 function matchCommands(watches, webMessage, ownMessageIds, now = new Date()) {
@@ -46,6 +50,33 @@ function matchCommands(watches, webMessage, ownMessageIds, now = new Date()) {
     .map(([watchId]) => ({ watchId, incoming: buildIncoming(webMessage, text) }))
 }
 
+// `messageUpdate`: an item of the Baileys event "messages.update". An edit comes as
+// {key: key of the original message, update: {message: {editedMessage: {message}},
+// messageTimestamp: second of the edit}}. Returns [{watchId, incoming}] like matchCommands, only
+// for watches with includeEdits; anything else (status, reactions, deletions) gives [].
+function matchEdits(watches, messageUpdate, ownMessageIds, now = new Date()) {
+  const updatedMessage = messageUpdate?.update?.message
+  if (!updatedMessage?.editedMessage || !messageUpdate.key?.id) {
+    return []
+  }
+  const editWatches = new Map([...watches].filter(([, watch]) => watch.includeEdits))
+  const webMessage = {
+    key: messageUpdate.key,
+    message: updatedMessage,
+    messageTimestamp: messageUpdate.update.messageTimestamp,
+  }
+  return matchCommands(editWatches, webMessage, ownMessageIds, now)
+    .map(({ watchId, incoming }) => ({
+      watchId,
+      incoming: { ...incoming, edited_message_id: messageUpdate.key.id },
+    }))
+}
+
+// Unique per watch in "incoming": the same edit can arrive twice, two edits of one message cannot
+function buildEditMessageId(messageUpdate) {
+  return `edit:${messageUpdate.key.id}:${Number(messageUpdate.update.messageTimestamp || 0)}`
+}
+
 function buildIncoming(webMessage, text) {
   const messageKey = webMessage.key
   const senderJid = messageKey.participant || messageKey.participantAlt || messageKey.remoteJid
@@ -64,4 +95,4 @@ function buildIncoming(webMessage, text) {
   }
 }
 
-module.exports = { COMMAND_PREFIX, matchesCommand, matchCommands }
+module.exports = { COMMAND_PREFIX, matchesCommand, matchCommands, matchEdits, buildEditMessageId }

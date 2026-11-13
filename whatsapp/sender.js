@@ -12,7 +12,8 @@
 // Chat watches (interface watch_chat): while a watch is active, the commands (messages starting
 // with "/", or only the watch's command) written in its chat are stored, encrypted, in the
 // "incoming" collection for the project to read (see watches.js). A stored command is never
-// taken as a reply. Every other message of the chat is discarded unread.
+// taken as a reply. Every other message of the chat is discarded unread. Watches with
+// include_edits also get the edits of their commands (Baileys "messages.update").
 //
 // Sent messages are kept in SENT_MESSAGES_FILE: when the recipient's phone cannot
 // decrypt a message it asks for a retry, and Baileys answers it through
@@ -35,7 +36,7 @@ const {
 const { ENCRYPTION_VERSION, deriveKey, decryptJson, decryptPayload, decryptDocumentJson, encryptJson } = require('./crypto')
 const { buildOutgoingMessages, buildQuotedMessage } = require('./outgoing')
 const { REPLY_WINDOW_MS, buildReplyReaction, matchReply } = require('./replies')
-const { matchCommands } = require('./watches')
+const { buildEditMessageId, matchCommands, matchEdits } = require('./watches')
 
 const AUTH_DIR = '/app/auth'
 const QR_DIR = '/app/qr'
@@ -174,6 +175,12 @@ async function connect() {
   socket.ev.on('messages.upsert', ({ messages: receivedMessages }) => {
     handleReceivedMessages(receivedMessages).catch((error) => {
       log(`Erro ao processar mensagens recebidas: ${error.message}`)
+    })
+  })
+  // Edits of messages: only stored for watches with include_edits
+  socket.ev.on('messages.update', (messageUpdates) => {
+    handleMessageUpdates(messageUpdates).catch((error) => {
+      log(`Erro ao processar mensagens editadas: ${error.message}`)
     })
   })
 
@@ -403,6 +410,7 @@ async function refreshWatches() {
           command: watchPayload.command || null,
           createdAt: watchDocument.created_at,
           until: watchDocument.until || null,
+          includeEdits: Boolean(watchDocument.include_edits),
         })
         log(`Escuta ativa: ${watchId} (${watchDocument.source})`)
       } catch (error) {
@@ -417,11 +425,28 @@ async function refreshWatches() {
 // Returns true when the message was a command of at least one watch
 async function storeCommands(webMessage, ownMessageIds, now) {
   const matches = matchCommands(activeWatches, webMessage, ownMessageIds, now)
+  await storeIncoming(matches, webMessage.key.id, now)
+  return matches.length > 0
+}
+
+async function handleMessageUpdates(messageUpdates) {
+  if (!activeWatches.size) {
+    return
+  }
+  const now = new Date()
+  const ownMessageIds = new Set(Object.keys(sentMessages))
+  for (const messageUpdate of messageUpdates) {
+    const matches = matchEdits(activeWatches, messageUpdate, ownMessageIds, now)
+    await storeIncoming(matches, buildEditMessageId(messageUpdate), now)
+  }
+}
+
+async function storeIncoming(matches, whatsappMessageId, now) {
   for (const { watchId, incoming } of matches) {
     const { nonce, ciphertext } = encryptJson(encryptionKey, incoming)
     // Upsert: the same message can arrive twice (live and again after a reconnection)
     await incomingCollection.updateOne(
-      { watch_id: new ObjectId(watchId), whatsapp_message_id: webMessage.key.id },
+      { watch_id: new ObjectId(watchId), whatsapp_message_id: whatsappMessageId },
       { $setOnInsert: {
         encryption_version: ENCRYPTION_VERSION,
         nonce,
@@ -432,9 +457,8 @@ async function storeCommands(webMessage, ownMessageIds, now) {
       } },
       { upsert: true },
     )
-    log(`Comando recebido para a escuta ${watchId}`)
+    log(`${incoming.edited_message_id ? 'Edição de comando' : 'Comando'} recebido para a escuta ${watchId}`)
   }
-  return matches.length > 0
 }
 
 // ---------------------------------------------------------------- queue
